@@ -87,7 +87,7 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() => isLoading = true);
 
       // Backend sunucu adresi
-      final uri = Uri.parse("http://127.0.0.1:8000/generate-quiz");
+      final uri = Uri.parse('https://slidequiz-api.onrender.com/generate-quiz');
       var request = http.MultipartRequest("POST", uri);
       request.fields['question_count'] = questionCount.toString();
       request.files.add(
