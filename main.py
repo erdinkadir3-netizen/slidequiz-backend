@@ -1,14 +1,11 @@
 ﻿import os
 import json
 import time
+import io
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 from google.genai import types
-import pypdf
-from docx import Document
-from pptx import Presentation
-import io
 
 app = FastAPI(title="SlideQuiz API")
 
@@ -27,20 +24,14 @@ def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
     ext = filename.split(".")[-1].lower()
     text = ""
     if ext == "pdf":
-        reader = pypdf.PdfReader(io.BytesIO(file_bytes))
-        for page in reader.pages:
-            text += page.extract_text() or ""
-    elif ext == "docx":
-        doc = Document(io.BytesIO(file_bytes))
-        for p in doc.paragraphs:
-            text += p.text + "\n"
-    elif ext == "pptx":
-        prs = Presentation(io.BytesIO(file_bytes))
-        for slide in prs.slides:
-            for shape in slide.shapes:
-                if hasattr(shape, "text"):
-                    text += shape.text + "\n"
-    elif ext == "txt":
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+            for page in reader.pages:
+                text += page.extract_text() or ""
+        except Exception:
+            text = file_bytes.decode("utf-8", errors="ignore")
+    else:
         text = file_bytes.decode("utf-8", errors="ignore")
     return text
 
@@ -55,22 +46,25 @@ async def generate_quiz(file: UploadFile = File(...)):
         raw_text = extract_text_from_file(content, file.filename)
         
         if not raw_text.strip():
-            raise HTTPException(status_code=400, detail="Dosyadan metin okunamadı.")
+            raw_text = content.decode("utf-8", errors="ignore")
+            
+        if not raw_text.strip():
+            raise HTTPException(status_code=400, detail="Dosyadan metin okunamadi.")
             
         prompt = f"""
-Sen bir eğitim uzmanısın. Aşağıda sana verilen ders notlarından veya slayt içeriğinden TAM 5 adet çoktan seçmeli soru hazırla.
-Sorular sadece verilen metindeki bilgilere dayansın.
+Sen bir egitim uzmanisin. Asagida sana verilen ders notlarindan veya slayt iceriginden TAM 5 adet coktan secmeli soru hazirla.
+Sorular sadece verilen metindeki bilgilere dayansin.
 
-Çıktıyı SADECE geçerli bir JSON formatında ver. JSON şeması tam olarak şu şekilde olmalıdır:
+Ciktiyi SADECE gecerli bir JSON formatinda ver. JSON semasi tam olarak su sekilde olmalidir:
 [
   {{
     "question": "Soru metni buraya",
-    "options": ["A şıkkı", "B şıkkı", "C şıkkı", "D şıkkı"],
+    "options": ["A sikki", "B sikki", "C sikki", "D sikki"],
     "correct_answer": 0,
-    "explanation": "Doğru cevabın kısa açıklaması"
+    "explanation": "Dogru cevabin kisa aciklamasi"
   }}
 ]
-(Not: correct_answer 0 ile 3 arasında bir indeks olmalıdır.)
+(Not: correct_answer 0 ile 3 arasinda bir indeks olmalidir.)
 
 Metin:
 {raw_text[:12000]}
@@ -79,7 +73,6 @@ Metin:
         response = None
         last_error = None
         
-        # 503 yogunluk hatasina karsi 4 kere tekrar deneme dongusu
         for attempt in range(4):
             try:
                 response = client.models.generate_content(
@@ -93,7 +86,7 @@ Metin:
                     break
             except Exception as err:
                 last_error = err
-                time.sleep(3)  # 3 saniye bekle ve tekrar dene
+                time.sleep(3)
 
         if response is None or not response.text:
             raise HTTPException(
