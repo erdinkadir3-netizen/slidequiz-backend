@@ -141,25 +141,21 @@ async def generate_quiz(
         response = None
         last_error = None
 
-        for attempt in range(3):
-            try:
-                response = client.models.generate_content(
-                    model="models/gemini-3.8-flash",
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                    ),
-                )
-                if response and response.text:
-                    break
-            except Exception as err:
-                last_error = err
-                time.sleep(2)
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                ),
+            )
+        except Exception as err:
+            last_error = err
 
         if response is None or not response.text:
             raise HTTPException(
                 status_code=503,
-                detail=f"Sunucu meşgul, lütfen birazdan tekrar deneyin: {str(last_error)}"
+                detail=f"Gemini Hatası: {last_error}",
             )
 
         raw_text = response.text.strip()
