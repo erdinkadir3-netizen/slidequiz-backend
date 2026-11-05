@@ -1,26 +1,16 @@
-import io
+﻿import os
 import json
-import re
 import time
-import traceback
-from typing import List
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 from google.genai import types
-from pypdf import PdfReader
+import pypdf
+from docx import Document
 from pptx import Presentation
-from pydantic import BaseModel
+import io
 
-import os
-
-API_KEY = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6ImNbT1sy81v0CLPsQXc_XJ-q8aNjnVkqIez_iUFrY8rA")
-client = genai.Client(
-    api_key=API_KEY,
-    http_options=types.HttpOptions(api_version="v1")
-)
-
-app = FastAPI(title="SlideQuiz API", version="1.0")
+app = FastAPI(title="SlideQuiz API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,127 +20,70 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+client = genai.Client(api_key=GEMINI_API_KEY)
 
-class Question(BaseModel):
-    question: str
-    options: List[str]
-    answer: str
-
-
-class QuizResponse(BaseModel):
-    total_questions: int
-    questions: List[Question]
-
-
-def extract_text_from_file(filename: str, content: bytes) -> str:
+def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
+    ext = filename.split(".")[-1].lower()
     text = ""
-    file_stream = io.BytesIO(content)
-    lower_name = (filename or "").lower()
-
-    # 1. Metin Belgesi (.txt)
-    if lower_name.endswith(".txt") or not lower_name:
-        try:
-            text = content.decode("utf-8")
-        except UnicodeDecodeError:
-            try:
-                text = content.decode("latin-1")
-            except Exception:
-                text = ""
-
-    # 2. Word Belgesi (.docx)
-    if not text and (lower_name.endswith(".docx") or not lower_name):
-        try:
-            from docx import Document
-            doc = Document(file_stream)
-            extracted = "\n".join([p.text for p in doc.paragraphs if p.text])
-            if extracted.strip():
-                return extracted.strip()
-            file_stream.seek(0)
-        except Exception:
-            file_stream.seek(0)
-
-    # 3. PDF (.pdf)
-    if not text and (lower_name.endswith(".pdf") or not lower_name):
-        try:
-            reader = PdfReader(file_stream)
-            extracted = ""
-            for page in reader.pages:
-                t = page.extract_text()
-                if t:
-                    extracted += t + "\n"
-            if extracted.strip():
-                return extracted.strip()
-            file_stream.seek(0)
-        except Exception:
-            file_stream.seek(0)
-
-    # 4. PowerPoint (.pptx, .ppt)
-    if not text and (lower_name.endswith((".pptx", ".ppt")) or not lower_name):
-        try:
-            prs = Presentation(file_stream)
-            extracted = ""
-            for slide in prs.slides:
-                for shape in slide.shapes:
-                    if shape.has_text_frame:
-                        extracted += shape.text + "\n"
-            if extracted.strip():
-                return extracted.strip()
-        except Exception:
-            pass
-
-    return text.strip()
-
+    if ext == "pdf":
+        reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+        for page in reader.pages:
+            text += page.extract_text() or ""
+    elif ext == "docx":
+        doc = Document(io.BytesIO(file_bytes))
+        for p in doc.paragraphs:
+            text += p.text + "\n"
+    elif ext == "pptx":
+        prs = Presentation(io.BytesIO(file_bytes))
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if hasattr(shape, "text"):
+                    text += shape.text + "\n"
+    elif ext == "txt":
+        text = file_bytes.decode("utf-8", errors="ignore")
+    return text
 
 @app.get("/")
-def home():
-    return {"status": "online", "project": "SlideQuiz API"}
+def read_root():
+    return {"status": "ok", "message": "SlideQuiz API is running"}
 
-
-@app.post("/generate-quiz", response_model=QuizResponse)
-async def generate_quiz(
-    file: UploadFile = File(...),
-    question_count: int = Form(default=5),
-):
+@app.post("/generate-quiz")
+async def generate_quiz(file: UploadFile = File(...)):
     try:
         content = await file.read()
-        extracted_text = extract_text_from_file(file.filename or "", content)
-
-        if not extracted_text:
-            raise HTTPException(
-                status_code=400,
-                detail="Dosya boş veya içeriğindeki metinler okunamadı."
-            )
-
-        prompt = f"""
-        Aşağıdaki ders materyali içeriğine dayanarak tam olarak {question_count} adet çoktan seçmeli sınav sorusu hazırla.
-        Her sorunun 4 seçeneği ve 1 kesin doğru cevabı olmalıdır.
-
-        ÇOK ÖNEMLİ: JSON anahtarlarını tam olarak şu İngilizce formatta döndür:
-        [
-          {{
-            "question": "Soru metni",
-            "options": ["A", "B", "C", "D"],
-            "answer": "Doğru seçenek"
-          }}
-        ]
-
-        İçerik:
-        {extracted_text[:6000]}
-        """
-
-        models_to_try = [
-            "models/gemini-3.8-flash",
-            "models/gemini-2.5-flash",
-            "gemini-2.5-flash"
-        ]
+        raw_text = extract_text_from_file(content, file.filename)
         
+        if not raw_text.strip():
+            raise HTTPException(status_code=400, detail="Dosyadan metin okunamadı.")
+            
+        prompt = f"""
+Sen bir eğitim uzmanısın. Aşağıda sana verilen ders notlarından veya slayt içeriğinden TAM 5 adet çoktan seçmeli soru hazırla.
+Sorular sadece verilen metindeki bilgilere dayansın.
+
+Çıktıyı SADECE geçerli bir JSON formatında ver. JSON şeması tam olarak şu şekilde olmalıdır:
+[
+  {{
+    "question": "Soru metni buraya",
+    "options": ["A şıkkı", "B şıkkı", "C şıkkı", "D şıkkı"],
+    "correct_answer": 0,
+    "explanation": "Doğru cevabın kısa açıklaması"
+  }}
+]
+(Not: correct_answer 0 ile 3 arasında bir indeks olmalıdır.)
+
+Metin:
+{raw_text[:12000]}
+"""
+
         response = None
         last_error = None
-
-        for model_name in models_to_try:
+        
+        # 503 yogunluk hatasina karsi 4 kere tekrar deneme dongusu
+        for attempt in range(4):
             try:
                 response = client.models.generate_content(
-                    model=model_name,
+                    model="models/gemini-3.8-flash",
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
@@ -160,62 +93,18 @@ async def generate_quiz(
                     break
             except Exception as err:
                 last_error = err
-                continue
+                time.sleep(3)  # 3 saniye bekle ve tekrar dene
 
         if response is None or not response.text:
             raise HTTPException(
                 status_code=503,
-                detail=f"Gemini Hatası: {last_error}",
+                detail=f"Gemini Hatasi: {last_error}",
             )
 
-        raw_text = response.text.strip()
-        if raw_text.startswith("```"):
-            raw_text = re.sub(r"^```[a-zA-Z]*\n?", "", raw_text)
-            raw_text = re.sub(r"\n?```$", "", raw_text)
+        quiz_data = json.loads(response.text)
+        return {"questions": quiz_data}
 
-        parsed_data = json.loads(raw_text)
-
-        if isinstance(parsed_data, dict):
-            if "questions" in parsed_data:
-                raw_list = parsed_data["questions"]
-            elif "sorular" in parsed_data:
-                raw_list = parsed_data["sorular"]
-            else:
-                raw_list = [parsed_data]
-        elif isinstance(parsed_data, list):
-            raw_list = parsed_data
-        else:
-            raw_list = []
-
-        normalized_questions: List[Question] = []
-        for item in raw_list:
-            if not isinstance(item, dict):
-                continue
-
-            q_text = item.get("question") or item.get("soru") or ""
-            opts = item.get("options") or item.get("secenekler") or item.get("seçenekler") or []
-            ans = item.get("answer") or item.get("cevap") or item.get("dogru_cevap") or ""
-
-            if isinstance(opts, dict):
-                opts = list(opts.values())
-
-            normalized_questions.append(
-                Question(
-                    question=str(q_text),
-                    options=[str(o) for o in opts],
-                    answer=str(ans)
-                )
-            )
-
-        return QuizResponse(
-            total_questions=len(normalized_questions),
-            questions=normalized_questions
-        )
-
-    except HTTPException:
-        raise
+    except HTTPException as he:
+        raise he
     except Exception as e:
-        print("\n--- HATA AYRINTISI BAŞLANGICI ---")
-        traceback.print_exc()
-        print("--- HATA AYRINTISI SONU ---\n")
         raise HTTPException(status_code=500, detail=str(e))
