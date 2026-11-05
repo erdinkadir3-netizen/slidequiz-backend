@@ -141,17 +141,10 @@ async def generate_quiz(
         response = None
         last_error = None
 
-        CANDIDATE_MODELS = [
-            "gemini-2.0-flash",
-            "gemini-1.5-flash",
-            "gemini-1.5-pro",
-            "gemini-2.5-flash",
-        ]
-
-        for model_name in CANDIDATE_MODELS:
+        for attempt in range(3):
             try:
                 response = client.models.generate_content(
-                    model=model_name,
+                    model="models/gemini-3.8-flash",
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
@@ -161,7 +154,7 @@ async def generate_quiz(
                     break
             except Exception as err:
                 last_error = err
-                continue
+                time.sleep(2)
 
         if response is None or not response.text:
             raise HTTPException(
